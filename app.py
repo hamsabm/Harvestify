@@ -1,6 +1,6 @@
 # Importing essential libraries and modules
 
-from flask import Flask, render_template, request
+from flask import Flask, render_template, request, redirect
 from markupsafe import Markup
 import numpy as np
 import pandas as pd
@@ -16,9 +16,8 @@ from PIL import Image
 from utils.model import ResNet9
 # ==============================================================================================
 
-# -------------------------LOADING THE TRAINED MODELS -----------------------------------------------
+# ------------------------- LOADING MODELS LAZILY -----------------------------------------------
 
-# Loading plant disease classification model
 disease_classes = ['Apple___Apple_scab',
                    'Apple___Black_rot',
                    'Apple___Cedar_apple_rust',
@@ -59,16 +58,30 @@ disease_classes = ['Apple___Apple_scab',
                    'Tomato___healthy']
 
 disease_model_path = 'models/plant_disease_model.pth'
-disease_model = ResNet9(3, len(disease_classes))
-disease_model.load_state_dict(torch.load(
-    disease_model_path, map_location=torch.device('cpu')))
-disease_model.eval()
-
-
-# Loading crop recommendation model
 crop_recommendation_model_path = 'models/RandomForest.pkl'
-crop_recommendation_model = pickle.load(
-    open(crop_recommendation_model_path, 'rb'))
+
+disease_model = None
+crop_recommendation_model = None
+
+def get_disease_model():
+    global disease_model
+    if disease_model is None:
+        print("Loading disease model...")
+        disease_model = ResNet9(3, len(disease_classes))
+        disease_model.load_state_dict(torch.load(
+            disease_model_path, map_location=torch.device('cpu')))
+        disease_model.eval()
+        print("Disease model loaded successfully.")
+    return disease_model
+
+def get_crop_recommendation_model():
+    global crop_recommendation_model
+    if crop_recommendation_model is None:
+        print("Loading crop recommendation model...")
+        crop_recommendation_model = pickle.load(
+            open(crop_recommendation_model_path, 'rb'))
+        print("Crop recommendation model loaded successfully.")
+    return crop_recommendation_model
 
 
 # =========================================================================================
@@ -101,22 +114,24 @@ def weather_fetch(city_name):
     return None
 
 
-def predict_image(img, model=disease_model):
+def predict_image(img):
     """
     Transforms image to tensor and predicts disease label
     :params: image
     :return: prediction (string)
     """
+    model = get_disease_model()
     transform = transforms.Compose([
         transforms.Resize(256),
         transforms.ToTensor(),
     ])
-    image = Image.open(io.BytesIO(img))
+    image = Image.open(io.BytesIO(img)).convert('RGB')
     img_t = transform(image)
     img_u = torch.unsqueeze(img_t, 0)
 
     # Get predictions from model
-    yb = model(img_u)
+    with torch.no_grad():
+        yb = model(img_u)
     # Pick index with highest probability
     _, preds = torch.max(yb, dim=1)
     prediction = disease_classes[preds[0].item()]
@@ -184,7 +199,8 @@ def crop_prediction():
         if weather is not None:
             temperature, humidity = weather
             data = np.array([[N, P, K, temperature, humidity, ph, rainfall]])
-            my_prediction = crop_recommendation_model.predict(data)
+            model = get_crop_recommendation_model()
+            my_prediction = model.predict(data)
             final_prediction = my_prediction[0]
 
             return render_template('crop-result.html', prediction=final_prediction, title=title)
@@ -257,8 +273,8 @@ def disease_prediction():
 
             prediction = Markup(str(disease_dic[prediction]))
             return render_template('disease-result.html', prediction=prediction, title=title)
-        except:
-            pass
+        except Exception as e:
+            print(f"Error during disease prediction: {e}")
     return render_template('disease.html', title=title)
 
 
